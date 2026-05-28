@@ -1,0 +1,167 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum OfferType {
+  BUY
+  SELL
+}
+
+enum DealStatus {
+  CREATED             // Сделка создана, ждёт перевода покупателя
+  PAYMENT_PENDING     // Покупатель заявил об оплате, ждёт подтверждения адм.
+  PAYMENT_CONFIRMED   // Админ подтвердил получение, продавец должен отправить актив
+  ASSET_SENT          // Продавец загрузил доказательство отправки
+  COMPLETED           // Покупатель подтвердил получение, сделка закрыта
+  DISPUTED            // Открыт спор
+  RESOLVED_BUYER      // Спор решён в пользу покупателя (возврат)
+  RESOLVED_SELLER     // Спор решён в пользу продавца
+  CANCELLED           // Отменена
+}
+
+enum DisputeStatus {
+  OPEN
+  RESOLVED
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  username        String    @unique
+  role            Role      @default(USER)
+  isVerified      Boolean   @default(false)
+  isBlocked       Boolean   @default(false)
+  verifyToken     String?
+  twoFASecret     String?   // TOTP secret для 2FA (для admin)
+  refreshToken    String?
+  rating          Float     @default(0)
+  dealsCount      Int       @default(0)
+  createdAt       DateTime  @default(now())
+
+  offers          Offer[]
+  dealsAsBuyer    Deal[]    @relation("BuyerDeals")
+  dealsAsSeller   Deal[]    @relation("SellerDeals")
+  messagesSent    Message[]
+  reviewsGiven    Review[]  @relation("ReviewsGiven")
+  reviewsReceived Review[]  @relation("ReviewsReceived")
+  logs            Log[]
+}
+
+model Offer {
+  id            String      @id @default(cuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id])
+  type          OfferType                  // BUY или SELL
+  asset         String                     // "USDT", "BTC", "ETH"
+  fiat          String                     // "RUB", "USD", "EUR"
+  price         Decimal                    // Курс за единицу
+  minAmount     Decimal                    // Минимальная сумма сделки (в фиате)
+  maxAmount     Decimal                    // Максимальная сумма сделки (в фиате)
+  paymentMethod String                     // "Сбербанк", "USDT TRC20", etc.
+  description   String?
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  deals         Deal[]
+}
+
+model Deal {
+  id              String      @id @default(cuid())
+  offerId         String
+  offer           Offer       @relation(fields: [offerId], references: [id])
+  buyerId         String
+  buyer           User        @relation("BuyerDeals", fields: [buyerId], references: [id])
+  sellerId        String
+  seller          User        @relation("SellerDeals", fields: [sellerId], references: [id])
+  assetAmount     Decimal                  // Сколько крипты
+  fiatAmount      Decimal                  // Сколько фиата
+  status          DealStatus  @default(CREATED)
+  // Реквизиты для перевода покупателем (заполняет админ или берётся из конфига)
+  escrowDetails   String?
+  // Доказательство оплаты от покупателя
+  buyerProof      String?
+  // Доказательство отправки актива продавцом
+  sellerProof     String?
+  adminNote       String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  messages        Message[]
+  transaction     Transaction?
+  dispute         Dispute?
+  reviews         Review[]
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  dealId    String
+  deal      Deal     @relation(fields: [dealId], references: [id])
+  senderId  String
+  sender    User     @relation(fields: [senderId], references: [id])
+  content   String
+  fileUrl   String?  // Прикреплённый файл/скриншот
+  createdAt DateTime @default(now())
+}
+
+model Transaction {
+  id          String   @id @default(cuid())
+  dealId      String   @unique
+  deal        Deal     @relation(fields: [dealId], references: [id])
+  type        String   // "escrow_in" | "escrow_out" | "refund"
+  amount      Decimal
+  currency    String
+  status      String   // "pending" | "confirmed" | "failed"
+  reference   String?  // Хеш транзакции или номер перевода
+  confirmedAt DateTime?
+  createdAt   DateTime @default(now())
+}
+
+model Dispute {
+  id          String        @id @default(cuid())
+  dealId      String        @unique
+  deal        Deal          @relation(fields: [dealId], references: [id])
+  openedById  String
+  reason      String
+  status      DisputeStatus @default(OPEN)
+  resolution  String?
+  resolvedAt  DateTime?
+  createdAt   DateTime      @default(now())
+}
+
+model Review {
+  id         String   @id @default(cuid())
+  dealId     String
+  deal       Deal     @relation(fields: [dealId], references: [id])
+  authorId   String
+  author     User     @relation("ReviewsGiven", fields: [authorId], references: [id])
+  targetId   String
+  target     User     @relation("ReviewsReceived", fields: [targetId], references: [id])
+  rating     Int      // 1-5
+  comment    String?
+  createdAt  DateTime @default(now())
+}
+
+model Log {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String?  // "deal", "offer", "user"
+  entityId  String?
+  meta      Json?
+  ip        String?
+  createdAt DateTime @default(now())
+}
